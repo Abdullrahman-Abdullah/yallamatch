@@ -4,3 +4,5 @@ supabase
 python-dotenv
 cloudinary
 python-multipart
+python-jose[cryptography]
+passlib[bcrypt]
