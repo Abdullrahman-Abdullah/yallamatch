@@ -1,179 +1,129 @@
 import os
+import random
 import datetime
 from typing import List, Optional
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from jose import JWTError, jwt
-from passlib.context import CryptContext
-from pydantic import BaseModel
-
+from fastapi import FastAPI, Form, HTTPException, Depends, UploadFile, File, status
+from fastapi.security import OAuth2PasswordBearer
+from jose import jwt, JWTError
 from .database import supabase, cloudinary
 
-# --- الإعدادات الأمنية ---
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", "YALLA_MATCH_SUPER_SECRET_2026")
+# --- Settings ---
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "YALLA_MATCH_SECRET_2026_KEY")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # أسبوع
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/verify")
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+app = FastAPI(title="Yalla Match Ecosystem")
 
-app = FastAPI(title="Yalla Match Ecosystem API")
-
-# --- دوال الأمان والـ JWT ---
-def create_access_token(data: dict):
-    to_encode = data.copy()
-    expire = datetime.datetime.utcnow() + datetime.timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+# --- Helpers ---
+def create_access_token(user_id: str):
+    expire = datetime.datetime.utcnow() + datetime.timedelta(days=30)
+    return jwt.encode({"sub": user_id, "exp": expire}, SECRET_KEY, algorithm=ALGORITHM)
 
 async def get_current_user(token: str = Depends(oauth2_scheme)):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: str = payload.get("sub")
-        if user_id is None:
-            raise credentials_exception
+        user_id = payload.get("sub")
+        if user_id is None: raise HTTPException(status_code=401)
         return user_id
     except JWTError:
-        raise credentials_exception
+        raise HTTPException(status_code=401, detail="Token expired or invalid")
 
-# --- 1. نظام الحسابات (Authentication) ---
+# --- 1. المرحلة الأولى: التحقق (Auth Phase) ---
 
-@app.post("/auth/register")
-async def register(
-    phone: str = Form(...),
-    password: str = Form(...),
-    name: str = Form(...),
-    user_type: str = Form(...) # player or owner
-):
-    hashed_password = pwd_context.hash(password)
-    user_entry = {
+@app.post("/auth/send-otp")
+async def send_otp(phone: str = Form(...)):
+    otp = str(random.randint(100000, 999999))
+    expiry = (datetime.datetime.utcnow() + datetime.timedelta(minutes=5)).isoformat()
+    
+    # حفظ أو تحديث المستخدم برقم الهاتف والـ OTP
+    supabase.table("profiles").upsert({
         "phone_number": phone,
-        "password_hash": hashed_password,
-        "full_name": name,
-        "user_type": user_type
-    }
-    try:
-        res = supabase.table("profiles").insert(user_entry).execute()
-        return {"message": "User created successfully", "user": res.data}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail="Phone number already exists or invalid data")
-
-@app.post("/auth/login")
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    res = supabase.table("profiles").select("*").eq("phone_number", form_data.username).execute()
-    if not res.data or not pwd_context.verify(form_data.password, res.data[0]['password_hash']):
-        raise HTTPException(status_code=401, detail="Invalid phone or password")
+        "otp_code": otp,
+        "otp_expiry": expiry
+    }, on_conflict="phone_number").execute()
     
-    access_token = create_access_token(data={"sub": str(res.data[0]['id']), "role": res.data[0]['user_type']})
-    return {"access_token": access_token, "token_type": "bearer"}
+    return {"message": "OTP Sent", "debug_otp": otp} # في الإنتاج يتم الإرسال عبر SMS
 
-# --- 2. الملف الشخصي (Profile & My Stuff) ---
-
-@app.get("/profile/me")
-async def read_users_me(current_user: str = Depends(get_current_user)):
-    user = supabase.table("profiles").select("*").eq("id", current_user).single().execute()
-    # جلب التحديات التي أنشأها المستخدم أو شارك فيها
-    challenges = supabase.table("challenges").select("*, bookings(booking_date, start_time, stadiums(name))")\
-        .or_(f"team_a_id.eq.{current_user},team_b_id.eq.{current_user}").execute()
+@app.post("/auth/verify")
+async def verify_otp(phone: str = Form(...), otp: str = Form(...)):
+    res = supabase.table("profiles").select("*").eq("phone_number", phone).single().execute()
+    if not res.data or res.data['otp_code'] != otp:
+        raise HTTPException(status_code=400, detail="الرمز غير صحيح")
     
+    # توليد التوكن وربط المستخدم به فوراً
+    token = create_access_token(str(res.data['id']))
     return {
-        "info": user.data,
-        "my_active_challenges": challenges.data
+        "access_token": token, 
+        "token_type": "bearer",
+        "is_onboarded": res.data['is_onboarded'],
+        "current_type": res.data['user_type']
     }
 
-# --- 3. إدارة الملاعب (للأصحاب) ---
+# --- 2. المرحلة الثانية: التوجيه (Onboarding Phase) ---
 
-@app.post("/stadiums/add")
-async def add_stadium(
+@app.post("/onboard/setup")
+async def setup_account(
     name: str = Form(...),
-    price: int = Form(...),
-    address: str = Form(...),
-    file: UploadFile = File(...),
-    current_user: str = Depends(get_current_user)
+    user_type: str = Form(...), # 'player', 'team', 'owner'
+    user_id: str = Depends(get_current_user)
 ):
-    # التأكد أن المستخدم هو صاحب ملعب
-    user_check = supabase.table("profiles").select("user_type").eq("id", current_user).single().execute()
-    if user_check.data['user_type'] != 'owner':
-        raise HTTPException(status_code=403, detail="Only owners can add stadiums")
-
-    # رفع الصورة لكلوديناري
-    img = cloudinary.uploader.upload(file.file, folder="yalla-match/stadiums")
+    if user_type not in ['player', 'team', 'owner']:
+        raise HTTPException(status_code=400, detail="نوع حساب غير صالح")
     
-    stadium_entry = {
-        "name": name,
-        "price_per_hour": price,
-        "address": address,
-        "owner_id": current_user,
-        "image_url": img.get("secure_url")
-    }
-    res = supabase.table("stadiums").insert(stadium_entry).execute()
-    return res.data
+    res = supabase.table("profiles").update({
+        "full_name": name,
+        "user_type": user_type,
+        "is_onboarded": True
+    }).eq("id", user_id).execute()
+    
+    return {"message": f"Welcome aboard as {user_type}!", "user": res.data}
 
-# --- 4. الحجوزات والتحديات (للاعبين) ---
+# --- 3. المرحلة الثالثة: الخدمات المتخصصة (Specialized Endpoints) ---
 
-@app.get("/explore/stadiums")
-async def list_all_stadiums():
-    # جلب الملاعب مع متوسط التقييمات (تجريبياً)
-    res = supabase.table("stadiums").select("*, ratings(rating)").eq("is_active", True).execute()
-    return res.data
-
-@app.post("/bookings/new")
-async def book_stadium(
-    stadium_id: int,
-    date: str,
-    time: str,
-    is_challenge: bool = False,
-    current_user: str = Depends(get_current_user)
+# --- Endpoints للملاعب (للـ Owner فقط) ---
+@app.post("/owner/stadiums/add")
+async def add_stadium(
+    name: str = Form(...), price: int = Form(...), address: str = Form(...),
+    file: UploadFile = File(...), user_id: str = Depends(get_current_user)
 ):
-    # منع الحجز المزدوج
-    conflict = supabase.table("bookings").select("*")\
-        .eq("stadium_id", stadium_id).eq("booking_date", date).eq("start_time", time).execute()
-    if conflict.data:
-        raise HTTPException(status_code=400, detail="Time slot already taken")
+    # حماية: التأكد من أنه Owner
+    user = supabase.table("profiles").select("user_type").eq("id", user_id).single().execute()
+    if user.data['user_type'] != 'owner':
+        raise HTTPException(status_code=403, detail="هذا القسم مخصص لأصحاب الملاعب فقط")
 
-    booking_data = {
-        "stadium_id": stadium_id,
-        "user_id": current_user,
-        "booking_date": date,
-        "start_time": time,
-        "is_challenge": is_challenge
-    }
-    res = supabase.table("bookings").insert(booking_data).execute()
-    
-    # إذا كان تحدي، ننشئ سجلاً في جدول التحديات
-    if is_challenge:
-        challenge_data = {
-            "booking_id": res.data[0]['id'],
-            "team_a_id": current_user,
-            "message": "هل أنت مستعد للتحدي؟"
-        }
-        supabase.table("challenges").insert(challenge_data).execute()
-
-    return {"message": "Booked successfully", "data": res.data}
-
-@app.get("/explore/challenges")
-async def list_open_challenges():
-    res = supabase.table("challenges").select("*, bookings(*, stadiums(*))").eq("status", "open").execute()
+    img = cloudinary.uploader.upload(file.file, folder="stadiums")
+    data = {"name": name, "price_per_hour": price, "address": address, "owner_id": user_id, "image_url": img.get("secure_url")}
+    res = supabase.table("stadiums").insert(data).execute()
     return res.data
 
-# --- 5. التقييمات ---
+# --- Endpoints للاعبين والفرق (Players/Teams) ---
+@app.get("/player/explore")
+async def explore_matches():
+    # جلب الملاعب والتحديات المفتوحة
+    stadiums = supabase.table("stadiums").select("*").execute()
+    challenges = supabase.table("challenges").select("*, bookings(*)").eq("status", "open").execute()
+    return {"stadiums": stadiums.data, "open_challenges": challenges.data}
+
+@app.post("/player/booking/new")
+async def create_booking(stadium_id: int, date: str, time: str, is_challenge: bool = False, user_id: str = Depends(get_current_user)):
+    # التحقق من نوع الحساب
+    user = supabase.table("profiles").select("user_type").eq("id", user_id).single().execute()
+    if user.data['user_type'] not in ['player', 'team']:
+        raise HTTPException(status_code=403, detail="الملاعب لا تحجز ملاعب!")
+
+    booking = {"stadium_id": stadium_id, "user_id": user_id, "booking_date": date, "start_time": time, "is_challenge": is_challenge}
+    res = supabase.table("bookings").insert(booking).execute()
+    return res.data
+
+# --- 4. الملف الشخصي والتقييمات (General) ---
+
+@app.get("/me/profile")
+async def get_my_full_profile(user_id: str = Depends(get_current_user)):
+    profile = supabase.table("profiles").select("*").eq("id", user_id).single().execute()
+    bookings = supabase.table("bookings").select("*, stadiums(name)").eq("user_id", user_id).execute()
+    return {"profile": profile.data, "my_bookings": bookings.data}
 
 @app.post("/stadiums/{stadium_id}/rate")
-async def rate_stadium(
-    stadium_id: int,
-    rating: int,
-    comment: str,
-    current_user: str = Depends(get_current_user)
-):
-    res = supabase.table("ratings").insert({
-        "stadium_id": stadium_id,
-        "user_id": current_user,
-        "rating": rating,
-        "comment": comment
-    }).execute()
-    return {"message": "Rating submitted"}
+async def rate_stadium(stadium_id: int, rating: int, comment: str, user_id: str = Depends(get_current_user)):
+    res = supabase.table("ratings").insert({"stadium_id": stadium_id, "user_id": user_id, "rating": rating, "comment": comment}).execute()
+    return {"status": "success"}
