@@ -6,13 +6,23 @@ from fastapi import FastAPI, Form, HTTPException, Depends, UploadFile, File, sta
 from fastapi.security import OAuth2PasswordBearer
 from jose import jwt, JWTError
 from .database import supabase, cloudinary
+from fastapi.middleware.cors import CORSMiddleware
 
 # --- Settings ---
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "YALLA_MATCH_SECRET_2026_KEY")
 ALGORITHM = "HS256"
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/verify")
+origins = ["*"]
 
 app = FastAPI(title="Yalla Match Ecosystem")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],  # السماح بجميع أنواع الطلبات (GET, POST, etc.)
+    allow_headers=["*"],  # السماح بجميع الـ Headers (مثل Authorization)
+)
 
 # --- Helpers ---
 def create_access_token(user_id: str):
