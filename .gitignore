@@ -1,4 +1,25 @@
+# Python bytecode (المجلدات الظاهرة في صورتك)
 __pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment (المجلد venv الظاهر في صورتك)
+venv/
+ENV/
+env/
+
+# Environment Variables (ملف .env الظاهر في صورتك - مهم جداً للأمان)
 .env
-vnev/
-.DS_Store
+
+# Firebase / Service Accounts (ملف المفاتيح الظاهر في مجلد core)
+core/serviceAccountKey.json
+*.json
+
+# IDEs and Editors
+.vscode/
+.idea/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/

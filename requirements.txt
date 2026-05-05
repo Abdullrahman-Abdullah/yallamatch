@@ -1,8 +1,7 @@
 fastapi
 uvicorn
-supabase
 python-dotenv
-cloudinary
-python-multipart
-python-jose[cryptography]
-passlib[bcrypt]
+supabase
+firebase-admin
+pydantic
+PyJWT
