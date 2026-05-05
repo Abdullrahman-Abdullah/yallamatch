@@ -1,27 +1,21 @@
 import os
 import json
-from dotenv import load_dotenv
 from supabase import create_client, Client
 import firebase_admin
 from firebase_admin import credentials
 
-# تحميل المتغيرات من ملف .env في التطوير المحلي
-load_dotenv()
+# --- إعدادات Supabase المباشرة للتجربة ---
+SUPABASE_URL = "https://hhqzsqwtkwmfilobubhs.supabase.co" # ضع الرابط هنا مباشرة
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImhocXpzcXd0a3dtZmlsb2J1YmhzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY2MTgwNTIsImV4cCI6MjA5MjE5NDA1Mn0.-fI-9ARvWBEttBjNSnyAxq050ySq-yEY0sXkI11E1lE" # ضع المفتاح هنا مباشرة[cite: 3]
 
-# --- إعدادات Supabase ---
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("CRITICAL: SUPABASE_URL or SUPABASE_KEY is missing from Environment Variables!")
-
+# تهيئة عميل Supabase
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- إعدادات Firebase ---
 def initialize_firebase():
-    """تهيئة Firebase Admin SDK باستخدام متغيرات البيئة أو ملف محلي"""
+    """تهيئة Firebase باستخدام متغير البيئة أو ملف محلي"""
     if not firebase_admin._apps:
-        # محاولة القراءة من متغيرات البيئة (مناسب لـ Vercel)
+        # فحص وجود متغير البيئة أولاً
         firebase_json = os.getenv("FIREBASE_CONFIG")
         
         if firebase_json:
@@ -29,18 +23,13 @@ def initialize_firebase():
                 cred_dict = json.loads(firebase_json)
                 cred = credentials.Certificate(cred_dict)
                 firebase_admin.initialize_app(cred)
-                print("Firebase initialized via Environment Variables")
-            except Exception as e:
-                print(f"Error parsing FIREBASE_CONFIG env: {e}")
+            except Exception:
+                pass
         else:
-            # الحل الاحتياطي: البحث عن الملف محلياً (للتجربة الحالية)[cite: 3]
+            # الحل الاحتياطي: الملف المحلي (تأكد من وجوده في مجلد core)[cite: 2]
             FIREBASE_KEY_PATH = os.path.join(os.path.dirname(__file__), "serviceAccountKey.json")
             if os.path.exists(FIREBASE_KEY_PATH):
                 cred = credentials.Certificate(FIREBASE_KEY_PATH)
                 firebase_admin.initialize_app(cred)
-                print("Firebase initialized via local JSON file")
-            else:
-                print("Warning: Firebase credentials not found!")
 
-# استدعاء التهيئة فور استيراد الملف[cite: 6]
 initialize_firebase()
