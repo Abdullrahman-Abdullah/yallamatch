@@ -5,3 +5,4 @@ supabase
 firebase-admin
 pydantic
 PyJWT
+requests
